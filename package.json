@@ -1,0 +1,31 @@
+{
+  "name": "meme-coin-project",
+  "version": "1.0.0",
+  "description": "My Awesome Meme Coin on Mantle",
+  "main": "index.js",
+  "scripts": {
+    "test": "hardhat test",
+    "compile": "hardhat compile",
+    "deploy:mantle-testnet": "hardhat run scripts/deploy.js --network mantleTestnet",
+    "deploy:mantle-mainnet": "hardhat run scripts/deploy.js --network mantleMainnet"
+  },
+  "keywords": [
+    "blockchain",
+    "mantle",
+    "ethereum",
+    "smart-contracts",
+    "hardhat",
+    "solidity",
+    "meme-coin"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.5"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.2",
+    "dotenv": "^16.4.5"
+  }
+}
