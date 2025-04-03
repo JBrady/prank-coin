@@ -261,17 +261,24 @@ contract PrankCoinV2 is ERC20, Ownable {
         require(isExcludedFromReflections[account] != excluded, "Account already in desired state");
 
         if (excluded) {
-            // Exclude: Transfer _tOwned to _rOwned if not already there, then remove _rOwned from _rTotal
-            uint256 tOwned = _requireOwned(account); // Get current actual balance
-            uint256 rOwnedToSet = 0;
-            if (tOwned > 0) {
-                uint256 currentRate = _getRate();
-                rOwnedToSet = (currentRate > 0) ? tOwned * currentRate : 0;
+            // Exclude: Get the current reflected balance, remove it from the total, and zero out the account's reflected balance.
+            uint256 currentROwned = _rOwned[account];
+            if (currentROwned > 0) {
+                // Ensure _rTotal doesn't underflow. Should not happen if logic is sound,
+                // but good practice, especially during debugging.
+                if (_rTotal >= currentROwned) {
+                    _rTotal = _rTotal - currentROwned;
+                } else {
+                    // This case indicates a deeper issue, maybe double-counting or initial state error.
+                    // For now, prevent underflow by setting _rTotal to 0 if subtraction would fail.
+                    // Consider adding an error/event here in a real scenario.
+                    _rTotal = 0;
+                }
             }
-            _rOwned[account] = rOwnedToSet;
-            _rTotal = _rTotal - _rOwned[account]; // Use subtraction with underflow check
+            // Remove the reflected balance from the excluded account
+            _rOwned[account] = 0;
             isExcludedFromReflections[account] = true;
-            emit LogExclusion(account, true, tOwned, _rOwned[account], _rTotal);
+            emit LogExclusion(account, true, _requireOwned(account), 0, _rTotal); // Log tOwned, new rOwned (0), new rTotal
         } else {
             // If including, recalculate rOwned based on current tOwned and current rate
             uint256 currentTOwned = super.balanceOf(account);

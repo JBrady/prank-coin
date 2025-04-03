@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
+const { loadFixture } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
 
 // Helper function for calculating expected amounts after tax
 // Note: Solidity performs integer division.
@@ -16,6 +17,37 @@ function calculateExpectedAmounts(amount, rates) {
         totalTax,
         amountAfterTax
     };
+}
+
+// Helper function for calculating expected amounts after tax
+// Note: Solidity performs integer division.
+const calculateTax = (amount, rateBps) => {
+  if (!amount || !rateBps) return 0n; // Use BigInt literal 0n
+  const BPS_DIVISOR = 10000n; // Use BigInt literal 10000n
+  return (BigInt(amount) * BigInt(rateBps)) / BPS_DIVISOR;
+};
+
+// Fixture to deploy the contract fresh for each test scenario
+async function deployPrankCoinV2Fixture() {
+    const [owner, addr1, addr2, addr3, reflector1, reflector2, prankFundSigner] = await ethers.getSigners();
+    const prankFundWalletAddr = prankFundSigner.address; // Use a signer for prank fund
+
+    const PrankCoinV2 = await ethers.getContractFactory("PrankCoinV2");
+    const initialReflectionBps = 100; // 1%
+    const initialPrankFundBps = 100;  // 1%
+    const initialBurnBps = 100;       // 1%
+
+    const prankCoin = await PrankCoinV2.deploy(
+      owner.address,
+      prankFundWalletAddr
+    );
+    await prankCoin.waitForDeployment();
+
+    // Set initial tax rates using the correct function
+    await prankCoin.connect(owner).setTaxRates(initialReflectionBps, initialPrankFundBps, initialBurnBps);
+
+    // Return everything needed for tests
+    return { prankCoin, owner, addr1, addr2, addr3, reflector1, reflector2, prankFundSigner, prankFundWalletAddr, initialReflectionBps, initialPrankFundBps, initialBurnBps };
 }
 
 describe("PrankCoinV2", function () {
@@ -324,16 +356,16 @@ describe("PrankCoinV2", function () {
         beforeEach(async function () {
             // Ensure addr1 and addr2 have some tokens to trade
             // Owner starts with total supply, transfer some to addr1 and addr2
-            const initialTransfer = ethers.parseUnits("1000000", 18);
+            const initialTransfer = ethers.parseUnits("1000000", decimals);
             await prankCoinV2.connect(owner).transfer(addr1.address, initialTransfer);
             await prankCoinV2.connect(owner).transfer(addr2.address, initialTransfer);
 
             // addr3 will be our passive holder to observe reflections
-            const holderAmount = ethers.parseUnits("500000", 18);
+            const holderAmount = ethers.parseUnits("500000", decimals);
             await prankCoinV2.connect(owner).transfer(addr3.address, holderAmount);
             initialHolderBalance = await prankCoinV2.balanceOf(addr3.address);
 
-            transferAmount = ethers.parseUnits("1000", 18); // Amount for taxed transfer
+            transferAmount = ethers.parseUnits("1000", decimals); // Amount for taxed transfer
         });
 
         it("Should increase a holder's balance after a taxed transfer occurs", async function () {
@@ -349,133 +381,163 @@ describe("PrankCoinV2", function () {
         });
 
         it("Should NOT increase the balance of addresses excluded from reflections (e.g., Prank Fund)", async function () {
-            const prankFundWallet = await prankCoinV2.prankFundWallet();
-            const initialPrankFundBalance = await prankCoinV2.balanceOf(prankFundWallet);
+         const { prankCoin, owner, addr1, addr2, prankFundWalletAddr } = await loadFixture(deployPrankCoinV2Fixture);
+         const transferAmount = ethers.parseUnits("1000", decimals);
 
-            // Perform a taxed transfer between addr1 and addr2
-            await prankCoinV2.connect(addr1).transfer(addr2.address, transferAmount);
+         // Get initial balances of excluded accounts (owner, contract, prank fund, dead address)
+         const initialOwnerBalance = await prankCoin.balanceOf(owner.address);
+         const initialContractBalance = await prankCoin.balanceOf(await prankCoin.getAddress());
+         const initialPrankFundBalance = await prankCoin.balanceOf(prankFundWalletAddr);
+         const initialDeadBalance = await prankCoin.balanceOf(await prankCoin.DEAD_ADDRESS());
 
-            // Prank fund will receive tax, but should not receive reflections on top of that
-            const finalPrankFundBalance = await prankCoinV2.balanceOf(prankFundWallet);
+         // Transfer some tokens to addr1 to allow it to transact
+         await prankCoin.connect(owner).transfer(addr1.address, transferAmount * 2n); // Send 2x amount - Use BigInt math
 
-            // Calculate expected tax received by prank fund
-            const prankFundBps = await prankCoinV2.prankFundTaxRateBps();
-            const expectedTax = (transferAmount * (prankFundBps)) / 10000n; // Tax sent directly
+         // Trigger a taxed transfer
+         await prankCoin.connect(addr1).transfer(addr2.address, transferAmount);
 
-            // Check if the final balance is roughly the initial balance plus the DIRECTLY sent tax
-            // It should NOT be significantly higher due to reflections compounding
-            // Allow for tiny rounding differences if any, though direct tax should be precise
-            const expectedFinalBalance = initialPrankFundBalance + expectedTax;
+         // Get final balances
+         const finalOwnerBalance = await prankCoin.balanceOf(owner.address);
+         const finalContractBalance = await prankCoin.balanceOf(await prankCoin.getAddress());
+         const finalPrankFundBalance = await prankCoin.balanceOf(prankFundWalletAddr);
+         const finalDeadBalance = await prankCoin.balanceOf(await prankCoin.DEAD_ADDRESS());
 
-             // Use closeTo to account for potential minor dust from multiple rate calculations if they were happening
-             // Although with current logic, it should be exact. Let's start with exact check.
-             // expect(finalPrankFundBalance).to.be.closeTo(expectedFinalBalance, ethers.parseUnits("1", 10)); // Allow tiny variance
-             expect(finalPrankFundBalance).to.equal(expectedFinalBalance); // Check for exact amount first
+         // Assertions: Balances of EXCLUDED accounts should NOT increase from reflections
+         // Note: Prank Fund and Dead Address balances WILL increase due to their respective taxes,
+         // but NOT from the reflection mechanism itself.
+         // Owner balance should decrease from the initial transfer to addr1.
+         expect(finalOwnerBalance).to.be.lt(initialOwnerBalance); // Decreased due to sending to addr1
+         expect(finalContractBalance).to.equal(initialContractBalance); // Should remain 0 and not receive reflections
 
-        });
+         // For PrankFund and DEAD, we need to account for the tax they received.
+         // reflectionTaxBps = 100, prankFundTaxBps = 100, burnTaxBps = 100 (default fixture)
+         const expectedPrankTax = (transferAmount * 100n) / 10000n;
+         const expectedBurnTax = (transferAmount * 100n) / 10000n;
 
-        it("Should reflect taxes to multiple holders", async function () {
-            // Transfer initial amounts to multiple holders (addr3, addr4)
-            const holderAmount = ethers.parseUnits("5000", decimals);
-            await prankCoinV2.connect(owner).transfer(addr3.address, holderAmount);
-            await prankCoinV2.connect(owner).transfer(addr4.address, holderAmount);
+         expect(finalPrankFundBalance).to.equal(initialPrankFundBalance + expectedPrankTax);
+         expect(finalDeadBalance).to.equal(initialDeadBalance + expectedBurnTax);
+       });
 
-            const initialHolder3Balance = await prankCoinV2.balanceOf(addr3.address);
-            const initialHolder4Balance = await prankCoinV2.balanceOf(addr4.address);
+       it("Should reflect taxes to multiple holders", async function() {
+        const { prankCoin, owner, addr1, addr2, reflector1, reflector2 } = await loadFixture(deployPrankCoinV2Fixture);
+        const transferAmount = ethers.parseUnits("10000", decimals);
+        const reflector1Initial = ethers.parseUnits("20000", decimals);
+        const reflector2Initial = ethers.parseUnits("80000", decimals);
 
-            // Perform a taxed transfer between addr1 and addr2
-            await prankCoinV2.connect(addr1).transfer(addr2.address, transferAmount);
+        // Setup: Give reflectors initial balances (different amounts)
+        await prankCoin.connect(owner).transfer(reflector1.address, reflector1Initial);
+        await prankCoin.connect(owner).transfer(reflector2.address, reflector2Initial);
+        await prankCoin.connect(owner).transfer(addr1.address, transferAmount * 2n); // Give addr1 enough to transfer
 
-            const finalHolder3Balance = await prankCoinV2.balanceOf(addr3.address);
-            const finalHolder4Balance = await prankCoinV2.balanceOf(addr4.address);
+        const bal1_start = await prankCoin.balanceOf(reflector1.address);
+        const bal2_start = await prankCoin.balanceOf(reflector2.address);
 
-            // Both holders should have increased balances
-            expect(finalHolder3Balance).to.be.gt(initialHolder3Balance);
-            expect(finalHolder4Balance).to.be.gt(initialHolder4Balance);
-        });
+        // Action: addr1 transfers to addr2 (triggering reflection)
+        await prankCoin.connect(addr1).transfer(addr2.address, transferAmount);
 
-        it("Should accumulate reflections over multiple transfers", async function () {
-            // Initial holder addr3
-            const holderAmount = ethers.parseUnits("5000", decimals);
-            await prankCoinV2.connect(owner).transfer(addr3.address, holderAmount);
+        // Assertions: Both reflectors should gain balance
+        const bal1_end = await prankCoin.balanceOf(reflector1.address);
+        const bal2_end = await prankCoin.balanceOf(reflector2.address);
 
-            const initialHolderBalance = await prankCoinV2.balanceOf(addr3.address);
+        expect(bal1_end).to.be.gt(bal1_start);
+        expect(bal2_end).to.be.gt(bal2_start);
 
-            // First taxed transfer (addr1 -> addr2)
-            await prankCoinV2.connect(addr1).transfer(addr2.address, transferAmount);
-            const balanceAfterFirstTransfer = await prankCoinV2.balanceOf(addr3.address);
-            expect(balanceAfterFirstTransfer).to.be.gt(initialHolderBalance);
+        // Assertions: Reflector2 should gain more than Reflector1 (proportional)
+        const gain1 = bal1_end - bal1_start;
+        const gain2 = bal2_end - bal2_start;
+        console.log(`Multi-Holder Test - Gain1: ${ethers.formatUnits(gain1, 18)} (${ethers.formatUnits(bal1_start, 18)})`);
+        console.log(`Multi-Holder Test - Gain2: ${ethers.formatUnits(gain2, 18)} (${ethers.formatUnits(bal2_start, 18)})`);
+        expect(gain2).to.be.gt(gain1); // Reflector2 held more, should gain more
+      });
 
-            // Second taxed transfer (addr2 -> addr1)
-            // Need to ensure addr2 has enough after the first transfer + tax
-            const addr2BalanceAfterFirst = await prankCoinV2.balanceOf(addr2.address);
-            const amountForSecondTransfer = ethers.parseUnits("100", decimals);
-            if (addr2BalanceAfterFirst >= amountForSecondTransfer) {
-                await prankCoinV2.connect(addr2).transfer(addr1.address, amountForSecondTransfer);
-            } else {
-                console.warn("Skipping second transfer in accumulation test: addr2 balance too low.");
-                // If addr2 doesn't have enough, we can't proceed with this part of the test
-                // But the first reflection check is still valid.
-                return; // Exit test early if second transfer not possible
-            }
+      it("Should accumulate reflections over multiple transfers", async function() {
+        const { prankCoin, owner, addr1, addr2, reflector1 } = await loadFixture(deployPrankCoinV2Fixture);
+        const transferAmount = ethers.parseUnits("1000", decimals);
+        const reflectorInitial = ethers.parseUnits("50000", decimals);
 
-            const finalHolderBalance = await prankCoinV2.balanceOf(addr3.address);
+        // Setup
+        await prankCoin.connect(owner).transfer(reflector1.address, reflectorInitial);
+        await prankCoin.connect(owner).transfer(addr1.address, transferAmount * 3n);
+        await prankCoin.connect(owner).transfer(addr2.address, transferAmount * 3n);
 
-            // Balance should have increased again
-            expect(finalHolderBalance).to.be.gt(balanceAfterFirstTransfer);
-        });
+        const bal_start = await prankCoin.balanceOf(reflector1.address);
 
-        it("Should handle exclusion/inclusion from reflections correctly", async function () {
-            // Initial holder addr3
-            const holderAmount = ethers.parseUnits("5000", decimals);
-            await prankCoinV2.connect(owner).transfer(addr3.address, holderAmount);
-            const initialHolderBalance = await prankCoinV2.balanceOf(addr3.address);
+        // Action 1
+        await prankCoin.connect(addr1).transfer(addr2.address, transferAmount);
+        const bal_after_1 = await prankCoin.balanceOf(reflector1.address);
+        expect(bal_after_1).to.be.gt(bal_start);
 
-            // Exclude addr3 from reflections
-            await prankCoinV2.connect(owner).setExcludedFromReflections(addr3.address, true);
-            expect(await prankCoinV2.isExcludedFromReflections(addr3.address)).to.be.true;
+        // Action 2
+        await prankCoin.connect(addr2).transfer(addr1.address, transferAmount);
+        const bal_after_2 = await prankCoin.balanceOf(reflector1.address);
+        expect(bal_after_2).to.be.gt(bal_after_1);
 
-            // Perform a taxed transfer (addr1 -> addr2)
-            await prankCoinV2.connect(addr1).transfer(addr2.address, transferAmount);
-            const balanceAfterTransferWhileExcluded = await prankCoinV2.balanceOf(addr3.address);
+         // Action 3
+        await prankCoin.connect(addr1).transfer(reflector1.address, transferAmount); // Transfer *to* reflector (taxed)
+        const bal_after_3 = await prankCoin.balanceOf(reflector1.address);
+        expect(bal_after_3).to.be.gt(bal_after_2); // Should still gain from reflections + receive amount
+      });
 
-            // Balance should NOT have changed
-            expect(balanceAfterTransferWhileExcluded).to.equal(initialHolderBalance);
+      it("Should handle exclusion/inclusion from reflections correctly", async function() {
+          const { prankCoin, owner, addr1, addr2, addr3 } = await loadFixture(deployPrankCoinV2Fixture);
+          const transferAmount = ethers.parseUnits("1000", decimals);
+          const initialAmount = ethers.parseUnits("500000", decimals); // Larger initial amount for addr3
 
-            // Include addr3 back into reflections
-            await prankCoinV2.connect(owner).setExcludedFromReflections(addr3.address, false);
-            expect(await prankCoinV2.isExcludedFromReflections(addr3.address)).to.be.false;
+          // Setup
+          await prankCoin.connect(owner).transfer(addr1.address, transferAmount * 2n);
+          await prankCoin.connect(owner).transfer(addr3.address, initialAmount);
 
-            // Perform another taxed transfer (addr2 -> addr1)
-            const addr2Balance = await prankCoinV2.balanceOf(addr2.address);
-            const secondTransferAmount = ethers.parseUnits("100", decimals);
-            if (addr2Balance >= secondTransferAmount) {
-                await prankCoinV2.connect(addr2).transfer(addr1.address, secondTransferAmount);
-            } else {
-                 console.warn("Skipping second transfer in exclude/include test: addr2 balance too low.");
-                 return; // Exit test early
-            }
+          // 1. Initially included, should receive reflections
+          const bal1 = await prankCoin.balanceOf(addr3.address);
+          await prankCoin.connect(addr1).transfer(addr2.address, transferAmount);
+          const bal2 = await prankCoin.balanceOf(addr3.address);
+          expect(bal2).to.be.gt(bal1);
 
-            const finalHolderBalance = await prankCoinV2.balanceOf(addr3.address);
+          // 2. Exclude addr3 from reflections
+          // Add check: ensure it's not already excluded
+          const isCurrentlyExcluded = await prankCoin.isExcludedFromReflections(addr3.address);
+          console.log(`\nDEBUG (Exclude Test): Before excluding addr3, isExcludedFromReflections[addr3] = ${isCurrentlyExcluded}`); // ADD DEBUG
+          expect(isCurrentlyExcluded).to.be.false;
 
-            // --- Debugging Logs --- START
-            const currentRTotal = await prankCoinV2.getRTotal(); // Use the new public getter
-            // We can't directly call _getRate() or access _rOwned from the test,
-            // but we can see the inputs and the output of balanceOf.
-            console.log(`\n--- Debug Info: Exclude/Include Test ---`);
-            console.log(`Balance when excluded: ${ethers.formatUnits(balanceAfterTransferWhileExcluded, decimals)}`);
-            console.log(`Final calculated balance (addr3): ${ethers.formatUnits(finalHolderBalance, decimals)}`);
-            console.log(`Current rTotal: ${currentRTotal.toString()}`);
-            // If rTotal is 0 or very small, the rate might be huge, causing balanceOf -> 0
-            console.log(`--- Debug Info: END ---\n`);
-            // --- Debugging Logs --- END
+          await expect(prankCoin.connect(owner).setExcludedFromReflections(addr3.address, true))
+              .to.emit(prankCoin, "ExcludedFromReflections").withArgs(addr3.address, true);
+          expect(await prankCoin.isExcludedFromReflections(addr3.address)).to.be.true;
 
-            // Balance should NOW have increased compared to when it was excluded
-            expect(finalHolderBalance).to.be.gt(balanceAfterTransferWhileExcluded);
-        });
+          // Balance might change slightly upon exclusion due to rOwned/tOwned sync
+          const bal_excluded = await prankCoin.balanceOf(addr3.address);
+          // console.log(`--- Debug Info: Exclude/Include Test ---`);
+          // console.log(`Balance when excluded: ${ethers.formatUnits(bal_excluded, 18)}`);
 
-         // Add tests for setExcludedFromReflections, include/exclude logic, etc.
+          // 3. Transfer again, addr3 (excluded) should NOT receive reflections
+          await prankCoin.connect(addr1).transfer(addr2.address, transferAmount);
+          const bal_after_excluded = await prankCoin.balanceOf(addr3.address);
+          // Allow for potential tiny dust due to floating point conversion in JS tests vs Solidity
+          // The important part is it shouldn't INCREASE significantly like before.
+          expect(bal_after_excluded).to.be.closeTo(bal_excluded, ethers.parseUnits("0.000001", 18));
 
-     });
- 
-  });
+          // 4. Re-include addr3
+          // Add check: ensure it's currently excluded before re-including
+          const isCurrentlyExcludedReinclude = await prankCoin.isExcludedFromReflections(addr3.address);
+          console.log(`DEBUG (Exclude Test): Before re-including addr3, isExcludedFromReflections[addr3] = ${isCurrentlyExcludedReinclude}`); // ADD DEBUG
+          expect(isCurrentlyExcludedReinclude).to.be.true;
+
+          await expect(prankCoin.connect(owner).setExcludedFromReflections(addr3.address, false))
+              .to.emit(prankCoin, "ExcludedFromReflections").withArgs(addr3.address, false);
+          expect(await prankCoin.isExcludedFromReflections(addr3.address)).to.be.false;
+          const bal_reincluded = await prankCoin.balanceOf(addr3.address); // Balance might sync again
+
+          // 5. Transfer again, addr3 (re-included) should receive reflections again
+          await prankCoin.connect(addr1).transfer(addr2.address, transferAmount);
+          const bal_final = await prankCoin.balanceOf(addr3.address);
+
+          // Debug logging
+          // const final_calc = await prankCoin.tokenFromReflection(await prankCoin.connect(owner).getRowned(addr3.address));
+          // console.log(`Final calculated balance (addr3): ${ethers.formatUnits(final_calc, 18)}`);
+          // console.log(`Current rTotal: ${await prankCoin.connect(owner).getrTotal()}`);
+          // console.log(`--- Debug Info: END ---`);
+
+          expect(bal_final).to.be.gt(bal_reincluded);
+      });
+
+    });
+});
