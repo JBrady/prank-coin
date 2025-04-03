@@ -4,9 +4,9 @@ require("dotenv").config();
 /** @type import('hardhat/config').HardhatUserConfig */
 
 // Ensure that we have all the environment variables we need.
-const privateKey = process.env.PRIVATE_KEY;
-if (!privateKey) {
-  throw new Error("Please set your PRIVATE_KEY in a .env file");
+const deployerPrivateKey = process.env.DEPLOYER_PRIVATE_KEY;
+if (!deployerPrivateKey) {
+  throw new Error("Please set your DEPLOYER_PRIVATE_KEY in a .env file");
 }
 
 const mantleTestnetRpcUrl = process.env.MANTLE_TESTNET_RPC_URL;
@@ -30,12 +30,12 @@ module.exports = {
     },
     mantleTestnet: {
       url: mantleTestnetRpcUrl || "https://rpc.testnet.mantle.xyz", // Public RPC
-      accounts: [`0x${privateKey}`],
-      chainId: 5001
+      accounts: [`0x${deployerPrivateKey}`],
+      chainId: 5003 // Updated Chain ID for Mantle Sepolia Testnet
     },
     mantleMainnet: {
       url: mantleMainnetRpcUrl || "https://rpc.mantle.xyz", // Public RPC
-      accounts: [`0x${privateKey}`],
+      accounts: [`0x${deployerPrivateKey}`],
       chainId: 5000
     }
   },
@@ -48,10 +48,11 @@ module.exports = {
     customChains: [
         {
             network: "mantleTestnet",
-            chainId: 5001,
+            chainId: 5003, // Updated Chain ID for Mantle Sepolia Testnet
             urls: {
-                apiURL: "https://api.testnet.mantlescan.xyz/api",
-                browserURL: "https://testnet.mantlescan.xyz"
+               // TODO: Verify Mantle Sepolia Scan API and Browser URLs
+               apiURL: "https://api.sepolia.mantlescan.xyz/api", // Likely URL - VERIFY!
+               browserURL: "https://sepolia.mantlescan.xyz/" // Likely URL - VERIFY!
             }
         },
         {
