@@ -1,13 +1,14 @@
 {
-  "name": "meme-coin-project",
-  "version": "1.0.0",
-  "description": "My Awesome Meme Coin on Mantle",
+  "name": "prank-coin",
+  "version": "3.0.0",
+  "description": "PrankCoin smart contracts and deployment tooling for Mantle",
   "main": "index.js",
   "scripts": {
     "test": "hardhat test",
     "compile": "hardhat compile",
-    "deploy:mantle-testnet": "hardhat run scripts/deploy.js --network mantleTestnet",
-    "deploy:mantle-mainnet": "hardhat run scripts/deploy.js --network mantleMainnet"
+    "lint": "solhint 'contracts/**/*.sol'",
+    "deploy:v3:mantle-testnet": "hardhat run scripts/deploy-v3.js --network mantleTestnet",
+    "deploy:v3:mantle-mainnet": "hardhat run scripts/deploy-v3.js --network mantleMainnet"
   },
   "keywords": [
     "blockchain",
@@ -22,10 +23,11 @@
   "license": "MIT",
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.22.5"
+    "hardhat": "^2.22.5",
+    "solhint": "^5.0.3"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.0.2",
+    "@openzeppelin/contracts": "^5.4.0",
     "dotenv": "^16.4.5"
   }
 }
